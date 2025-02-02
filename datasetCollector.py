@@ -32,6 +32,11 @@ class DatasetCollector:
         # Create necessary folders
         self._create_directories()
 
+        # Add recording state variables
+        self.recording_in_progress = False
+        self.current_frame = None
+        self.current_recording = None
+
     def _create_directories(self):
         """Create all required folders if they don't exist"""
         # Create base directories
