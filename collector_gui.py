@@ -361,53 +361,63 @@ class CollectorGUI(tk.Tk):
         sign_file = self.signs['dynamic'][idx]
         sign_name = os.path.splitext(sign_file)[0]
         duration = self.collector.sign_config.get(sign_name, 5)
-        
+    
         def recording_thread():
             self.recording_popup = tk.Toplevel()
             self.recording_popup.title("Recording Preview")
             self.recording_popup.geometry("640x480")
-            
-            # Use grid layout for popup
+        
             self.recording_popup.grid_columnconfigure(0, weight=1)
             self.recording_popup.grid_rowconfigure(0, weight=1)
-            
+        
             preview_label = ttk.Label(self.recording_popup)
             preview_label.grid(row=0, column=0, sticky="nsew")
-            
+        
             sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
             os.makedirs(sign_dir, exist_ok=True)
-            
+        
+            fps = 30  # Keda 7adedna en elvideo hytsagel b sor3et 30 frame fe elsanya
+            frame_interval = 1.0 / fps  # keda bn7seb elmoda been kol frame (about 0.033 sec)
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
-            out = cv2.VideoWriter(os.path.join(sign_dir, f"{sign_name}.mp4"), fourcc, 30, frame_size)
-            
+            out = cv2.VideoWriter(os.path.join(sign_dir, f"{sign_name}.mp4"), fourcc, fps, frame_size)
+        
             start_time = time.time()
-            while (time.time() - start_time) < duration:
-                try:
-                    frame = self.collector.frame_queue.get(timeout=0.1)
-                    out.write(frame)
-                    
-                    # Update recording preview
-                    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    img = self._resize_with_aspect_ratio(img, 
-                                                       preview_label.winfo_width(),
-                                                       preview_label.winfo_height())
-                    imgtk = ImageTk.PhotoImage(image=img)
-                    preview_label.imgtk = imgtk
-                    preview_label.config(image=imgtk)
-                    
-                    remaining = duration - (time.time() - start_time)
-                    self.status.config(text=f"Recording {sign_name} - {math.ceil(remaining)}s remaining")
-                    self.recording_popup.update()
-                except queue.Empty:
-                    continue
+            next_frame_time = start_time # Keda hn7seb elwa2t elly elmafrood n7ot feeh elframe elly gy fel video
+            end_time = start_time + duration
+        
+            while time.time() < end_time:
+              current_time = time.time()
+              if current_time < next_frame_time:
+                # Sleep until the next frame interval, hena ka2ini ba2olo estana shwaya
+                time.sleep(max(0, next_frame_time - current_time - 0.001))
             
+              try:
+                frame = self.collector.frame_queue.get(timeout=0.1)
+                out.write(frame)
+                next_frame_time += frame_interval
+                
+                # Update recording preview
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                img = self._resize_with_aspect_ratio(img, 
+                                                   preview_label.winfo_width(),
+                                                   preview_label.winfo_height())
+                imgtk = ImageTk.PhotoImage(image=img)
+                preview_label.imgtk = imgtk
+                preview_label.config(image=imgtk)
+                
+                remaining = end_time - time.time()
+                self.status.config(text=f"Recording {sign_name} - {math.ceil(remaining)}s remaining")
+                self.recording_popup.update()
+              except queue.Empty:
+                continue
+        
             out.release()
             self.recording_popup.destroy()
             self.current_sign_index += 1
             self.show_current_sign()
             self.status.config(text="Ready")
-        
+    
         threading.Thread(target=recording_thread, daemon=True).start()
 
     def _resize_with_aspect_ratio(self, image, max_width, max_height):
