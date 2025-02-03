@@ -486,7 +486,8 @@ class CollectorGUI(tk.Tk):
         def recording_thread():
             sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
             os.makedirs(sign_dir, exist_ok=True)
-
+            fps = 30  # Keda 7adedna en elvideo hytsagel b sor3et 30 frame fe elsanya
+            frame_interval = 1.0 / fps  # keda bn7seb elmoda been kol frame (about 0.033 sec)
             # Create progress popup
             popup = tk.Toplevel()
             popup.title(f"Recording {sign_name}")
@@ -517,7 +518,15 @@ class CollectorGUI(tk.Tk):
 
                 # Record for duration
                 start_time = time.time()
-                while (time.time() - start_time) < duration:
+                next_frame_time = start_time # Keda hn7seb elwa2t elly elmafrood n7ot feeh elframe elly gy fel video
+                end_time = start_time + duration
+            
+                while time.time() < end_time:
+                    current_time = time.time()
+                    if current_time < next_frame_time:
+                        # Sleep until the next frame interval, hena ka2ini ba2olo estana shwaya
+                        time.sleep(max(0, next_frame_time - current_time - 0.001))
+                
                     try:
                         frame = self.collector.frame_queue.get(timeout=0.1)
                         out.write(frame)
