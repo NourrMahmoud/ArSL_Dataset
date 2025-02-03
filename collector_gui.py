@@ -120,9 +120,23 @@ class CollectorGUI(tk.Tk):
         self.media_label.pack(fill=tk.BOTH, expand=True)
         self.paned_window.add(self.media_frame, weight=1)
         
+        self.current_video_count = 0  # Add this line
+        self.total_videos = 0
+        
         # Control panel at bottom (fixed height)
         control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=1, column=0, sticky="sew", padx=10, pady=10)
+        
+        # Add delay configuration
+        self.initial_delay = 3  # Seconds before first capture
+        self.video_delay = 1    # Seconds between videos
+        self.collection_running = False
+        
+        # Add delay button to control panel
+        self.delay_btn = ttk.Button(control_frame, text="Set Delays", 
+                                  command=self.set_delays)
+        self.delay_btn.pack(side=tk.LEFT, padx=5)
+        
         
         # Media controls in control panel
         self.play_btn = ttk.Button(control_frame, text="▶", width=5, 
@@ -169,6 +183,28 @@ class CollectorGUI(tk.Tk):
         
         self._ask_signs_directory()
         self._ask_username()
+        
+    def set_delays(self):
+        popup = tk.Toplevel()
+        popup.title("Set Recording Delays")
+        
+        ttk.Label(popup, text="Initial delay (seconds):").grid(row=0, column=0, padx=5, pady=5)
+        initial_entry = ttk.Entry(popup)
+        initial_entry.insert(0, str(self.initial_delay))
+        initial_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(popup, text="Delay between videos:").grid(row=1, column=0, padx=5, pady=5)
+        video_entry = ttk.Entry(popup)
+        video_entry.insert(0, str(self.video_delay))
+        video_entry.grid(row=1, column=1, padx=5, pady=5)
+        
+        def save_delays():
+            self.initial_delay = int(initial_entry.get())
+            self.video_delay = int(video_entry.get())
+            popup.destroy()
+        
+        ttk.Button(popup, text="Save", command=save_delays).grid(row=2, columnspan=2, pady=10)
+
         
     def _create_recording_popup(self, title):
         popup = tk.Toplevel()
@@ -302,7 +338,7 @@ class CollectorGUI(tk.Tk):
             self.media_player.stop()
         
         ext = os.path.splitext(path)[1].lower()
-        if ext in ['.jpg', '.png']:
+        if ext in ['.jpg', '.png', '.jpeg']:
             self.media_player = ImagePlayer(self.media_label, path)
         elif ext in ['.mp4', '.avi']:
             self.media_player = VideoPlayer(self.media_label, path)
@@ -324,90 +360,184 @@ class CollectorGUI(tk.Tk):
                 self.play_btn.config(text="||")
 
     def start_collection(self):
-        if self.current_sign_index >= len(self.signs['static']) + len(self.signs['dynamic']):
-            messagebox.showinfo("Complete", "All signs collected!")
+        if self.collection_running:
             return
         
-        if self.current_sign_index < len(self.signs['static']):
-            self.collect_static_sign()
-        else:
-            self.collect_dynamic_sign()
+        if self.current_sign_index >= len(self.signs['static']) + len(self.signs['dynamic']):
+            self.show_completion_message()
+            return
 
-    def collect_static_sign(self):
+        if self.current_sign_index < len(self.signs['static']):
+            # Static sign handling
+            sign_file = self.signs['static'][self.current_sign_index]
+            sign_name = os.path.splitext(sign_file)[0]
+            
+            count = simpledialog.askinteger("Images", 
+                                        f"Number of images for {sign_name}:", 
+                                        initialvalue=200)
+            if count is None:  # User canceled
+                return
+                
+            def start_with_countdown():
+                self.collection_running = True
+                self._start_countdown(self.initial_delay, 
+                                    lambda: self.collect_static_sign(count))
+                
+            start_with_countdown()
+        else:
+        # ====== ADD THIS DYNAMIC SIGN HANDLING BLOCK ======
+            idx = self.current_sign_index - len(self.signs['static'])
+            sign_file = self.signs['dynamic'][idx]
+            sign_name = os.path.splitext(sign_file)[0]
+            
+            # Ask for number of videos
+            video_count = simpledialog.askinteger("Videos", 
+                                                f"Number of videos for {sign_name}:",
+                                                initialvalue=3)
+            if video_count is None: return  # User canceled
+            
+            # Ask for duration
+            duration = simpledialog.askinteger("Duration", 
+                                            f"Duration per video (seconds):",
+                                            initialvalue=self.collector.sign_config.get(sign_name, 5))
+            if duration is None: return
+            
+            def start_with_countdown():
+                self.collection_running = True
+                self._start_countdown(self.initial_delay, 
+                                    lambda: self.collect_dynamic_sign(sign_name, duration, video_count))
+                
+            start_with_countdown()
+            # ====== END OF DYNAMIC SIGN BLOCK ======
+        
+    def _start_countdown(self, seconds, callback=None):
+        self.status.config(text=f"Starting in {seconds}...")
+        if seconds > 0:
+            self.after(1000, lambda: self._start_countdown(seconds-1, callback))
+        else:
+            self.status.config(text="Recording started!")
+            if callback:
+                callback()
+            else:
+                # Start the actual collection process
+                if self.current_sign_index < len(self.signs['static']):
+                    self.collect_static_sign()
+                else:
+                    self.collect_dynamic_sign()
+
+    def collect_static_sign(self, count):
         sign_file = self.signs['static'][self.current_sign_index]
         sign_name = os.path.splitext(sign_file)[0]
-        count = simpledialog.askinteger("Images", f"Number of images for {sign_name}:", initialvalue=200)
         
-        def collection_thread():
+        # Create recording popup
+        popup = tk.Toplevel()
+        popup.title(f"Recording {sign_name}")
+        popup.geometry("640x480")
+        
+        preview_label = ttk.Label(popup)
+        preview_label.pack(fill=tk.BOTH, expand=True)
+        
+        progress = ttk.Progressbar(popup, orient=tk.HORIZONTAL)
+        progress.pack(fill=tk.X, padx=10, pady=5)
+        
+        def actual_collection_thread():
             sign_dir = os.path.join(self.collector.data_dir, "Images", sign_name, self.collector.username)
             os.makedirs(sign_dir, exist_ok=True)
             
             for i in range(count):
-                frame = self.collector.frame_queue.get()
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame)
-                img.save(os.path.join(sign_dir, f"{sign_name}_{i}.jpg"))
-                self.status.config(text=f"Saved image {i+1}/{count} for {sign_name}")
-                self.progress['value'] = (i+1)/count * 100
-            
-            self.current_sign_index += 1
-            self.show_current_sign()
-            self.progress['value'] = 0
-        
-        threading.Thread(target=collection_thread, daemon=True).start()
-
-    def collect_dynamic_sign(self):
-        idx = self.current_sign_index - len(self.signs['static'])
-        sign_file = self.signs['dynamic'][idx]
-        sign_name = os.path.splitext(sign_file)[0]
-        duration = self.collector.sign_config.get(sign_name, 5)
-        
-        def recording_thread():
-            self.recording_popup = tk.Toplevel()
-            self.recording_popup.title("Recording Preview")
-            self.recording_popup.geometry("640x480")
-            
-            # Use grid layout for popup
-            self.recording_popup.grid_columnconfigure(0, weight=1)
-            self.recording_popup.grid_rowconfigure(0, weight=1)
-            
-            preview_label = ttk.Label(self.recording_popup)
-            preview_label.grid(row=0, column=0, sticky="nsew")
-            
-            sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
-            os.makedirs(sign_dir, exist_ok=True)
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
-            out = cv2.VideoWriter(os.path.join(sign_dir, f"{sign_name}.mp4"), fourcc, 30, frame_size)
-            
-            start_time = time.time()
-            while (time.time() - start_time) < duration:
                 try:
-                    frame = self.collector.frame_queue.get(timeout=0.1)
-                    out.write(frame)
+                    frame = self.collector.frame_queue.get(timeout=1)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(frame)
+                    img.save(os.path.join(sign_dir, f"{sign_name}_{i}.jpg"))
                     
-                    # Update recording preview
-                    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    img = self._resize_with_aspect_ratio(img, 
-                                                       preview_label.winfo_width(),
-                                                       preview_label.winfo_height())
-                    imgtk = ImageTk.PhotoImage(image=img)
-                    preview_label.imgtk = imgtk
-                    preview_label.config(image=imgtk)
+                    # Update progress and preview using proper thread-safe calls
+                    self.after(0, lambda i=i: progress.config(value=(i+1)/count * 100))
+                    self.after(0, lambda f=frame: self.update_popup_preview(preview_label, f))
                     
-                    remaining = duration - (time.time() - start_time)
-                    self.status.config(text=f"Recording {sign_name} - {math.ceil(remaining)}s remaining")
-                    self.recording_popup.update()
                 except queue.Empty:
                     continue
             
-            out.release()
-            self.recording_popup.destroy()
+            self.after(0, popup.destroy)
             self.current_sign_index += 1
             self.show_current_sign()
-            self.status.config(text="Ready")
+            self.check_completion()
+            self.collection_running = False
         
+        threading.Thread(target=actual_collection_thread, daemon=True).start()
+        
+    def check_completion(self):
+        if self.current_sign_index >= len(self.signs['static']) + len(self.signs['dynamic']):
+            self.show_completion_message()
+            
+    def show_completion_message(self):
+        messagebox.showinfo("Collection Complete", 
+                        "All signs have been recorded!\n"
+                        "Thank you for your participation.")
+        
+    def update_popup_preview(self, label, frame):
+        img = Image.fromarray(frame)
+        img = self._resize_with_aspect_ratio(img, 640, 480)
+        imgtk = ImageTk.PhotoImage(image=img)
+        label.imgtk = imgtk
+        label.config(image=imgtk)
+
+    def collect_dynamic_sign(self, sign_name, duration, video_count):
+        def recording_thread():
+            sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
+            os.makedirs(sign_dir, exist_ok=True)
+
+            # Create progress popup
+            popup = tk.Toplevel()
+            popup.title(f"Recording {sign_name}")
+            popup.geometry("640x480")
+            
+            preview_label = ttk.Label(popup)
+            preview_label.pack(fill=tk.BOTH, expand=True)
+            
+            progress = ttk.Progressbar(popup, orient=tk.HORIZONTAL)
+            progress.pack(fill=tk.X, padx=10, pady=5)
+
+            for video_num in range(video_count):
+                # Update UI
+                self.after(0, lambda: progress.config(value=(video_num/video_count)*100))
+                self.after(0, lambda: self.status.config(
+                    text=f"Recording {sign_name} ({video_num+1}/{video_count})"
+                ))
+
+                # Wait between videos (except before first)
+                if video_num > 0:
+                    time.sleep(self.video_delay)
+
+                # Create video writer
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
+                out = cv2.VideoWriter(os.path.join(sign_dir, f"{sign_name}_{video_num}.mp4"), 
+                                    fourcc, 30, frame_size)
+
+                # Record for duration
+                start_time = time.time()
+                while (time.time() - start_time) < duration:
+                    try:
+                        frame = self.collector.frame_queue.get(timeout=0.1)
+                        out.write(frame)
+                        
+                        # Update preview
+                        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                        img = self._resize_with_aspect_ratio(img, 640, 480)
+                        imgtk = ImageTk.PhotoImage(image=img)
+                        self.after(0, lambda: self.update_preview(preview_label, imgtk))
+                    except queue.Empty:
+                        continue
+
+                out.release()
+
+            # Cleanup
+            popup.destroy()
+            self.current_sign_index += 1
+            self.show_current_sign()
+            self.collection_running = False
+
         threading.Thread(target=recording_thread, daemon=True).start()
 
     def _resize_with_aspect_ratio(self, image, max_width, max_height):
