@@ -508,7 +508,16 @@ class CollectorGUI(tk.Tk):
 
                 # Wait between videos (except before first)
                 if video_num > 0:
+                    # Create a small popup window
+                    delay_popup = tk.Toplevel()
+                    delay_popup.title("Next Recording")
+                    delay_label = ttk.Label(delay_popup, text=f"Next recording in {self.video_delay} seconds...")
+                    delay_label.pack(padx=20, pady=10)
+                    
                     time.sleep(self.video_delay)
+                    
+                    # Destroy the popup after delay
+                    delay_popup.destroy()
 
                 # Create video writer
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')

@@ -1,4 +1,6 @@
-# arsl_collector_pro_v4.py
+# Main application for collecting Arabic Sign Language dataset
+# This tool allows recording of both static images and dynamic videos of signs
+
 import cv2
 import mediapipe as mp
 import os
@@ -13,21 +15,30 @@ import math
 
 class SignDatasetCollector:
     def __init__(self, username, signs_dir):
+        # Basic configuration
         self.username = username
         self.signs_dir = signs_dir
         self.sign_config = {}
         self.load_sign_configuration()
         
+        # Initialize MediaPipe for pose and hand tracking
         self.mp_pose = mp.solutions.pose
         self.mp_hands = mp.solutions.hands
         self.pose = self.mp_pose.Pose(min_detection_confidence=0.5)
         self.hands = self.mp_hands.Hands(min_detection_confidence=0.5)
         
+        # Set up data storage
         self.data_dir = "ArSL_Dataset"
         self._create_directories()
         
+        # Camera and frame handling setup
         self.cap = cv2.VideoCapture(0)
-        self.frame_queue = queue.Queue(maxsize=1)
+        self.frame_queue = queue.Queue(maxsize=2)  # Small queue to reduce latency
+        self.preview_queue = queue.Queue(maxsize=1)  # Preview queue for UI updates
+        self.last_frame_time = 0
+        self.frame_interval = 1.0 / 30  # Target 30 frames per second
+        
+        # Recording state
         self.recording = False
         self.test_recording = False
         self.current_sign = None
@@ -59,33 +70,62 @@ class SignDatasetCollector:
         return signs
 
     def process_frame(self, frame):
+        current_time = time.time()
+        # Control frame rate to maintain consistent recording speed
+        if current_time - self.last_frame_time < self.frame_interval:
+            return None
+            
+        # Flip frame horizontally for more intuitive preview
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process pose
+        
+        # Track body pose
         pose_results = self.pose.process(rgb)
         if pose_results.pose_landmarks:
             mp.solutions.drawing_utils.draw_landmarks(
                 frame, pose_results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
         
-        # Process hands
+        # Track hand movements
         hand_results = self.hands.process(rgb)
         if hand_results.multi_hand_landmarks:
             for landmarks in hand_results.multi_hand_landmarks:
                 mp.solutions.drawing_utils.draw_landmarks(
                     frame, landmarks, self.mp_hands.HAND_CONNECTIONS)
         
+        self.last_frame_time = current_time
         return frame
 
     def camera_loop(self):
+        """Main camera capture loop that runs in a separate thread"""
         while self.cap.isOpened():
             ret, frame = self.cap.read()
-            if ret:
-                processed = self.process_frame(frame)
+            if not ret:
+                continue
+                
+            processed = self.process_frame(frame)
+            if processed is not None:
+                # Smart frame dropping: only keep most recent frames
                 try:
                     self.frame_queue.put_nowait(processed)
                 except queue.Full:
-                    pass
+                    # If queue is full, remove oldest frame
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put_nowait(processed)
+                    except (queue.Empty, queue.Full):
+                        pass
+                
+                # Create smaller preview for UI
+                preview_frame = cv2.resize(processed, (320, 240))
+                try:
+                    self.preview_queue.put_nowait(preview_frame)
+                except queue.Full:
+                    try:
+                        self.preview_queue.get_nowait()
+                        self.preview_queue.put_nowait(preview_frame)
+                    except (queue.Empty, queue.Full):
+                        pass
 
 class CollectorGUI(tk.Tk):
     def __init__(self):
@@ -93,6 +133,10 @@ class CollectorGUI(tk.Tk):
         self.title("ArSL Dataset Collector Pro v4")
         self.geometry("1200x800")
         self.minsize(800, 600)
+        
+        # Initialize timing variables first
+        self.last_preview_update = time.time()
+        self.preview_interval = 1.0 / 15  # 15 FPS for preview
         
         # Configure grid layout
         self.grid_columnconfigure(0, weight=1)
@@ -353,22 +397,41 @@ class CollectorGUI(tk.Tk):
             self.show_current_sign()
 
     def update_camera_preview(self):
-        try:
-            frame = self.collector.frame_queue.get_nowait()
-            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            
-            # Get current container size
-            container_width = self.camera_frame.winfo_width()
-            container_height = self.camera_frame.winfo_height()
-            
-            if container_width > 0 and container_height > 0:
-                img = self._resize_with_aspect_ratio(img, container_width, container_height)
+        current_time = time.time()
+        if current_time - self.last_preview_update >= self.preview_interval:
+            try:
+                frame = self.collector.preview_queue.get_nowait()
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                
+                # Cache container size
+                if not hasattr(self, '_container_size'):
+                    self._container_size = (
+                        self.camera_frame.winfo_width(),
+                        self.camera_frame.winfo_height()
+                    )
+                
+                # Only resize if container size has changed
+                if (self._container_size[0] != self.camera_frame.winfo_width() or
+                    self._container_size[1] != self.camera_frame.winfo_height()):
+                    self._container_size = (
+                        self.camera_frame.winfo_width(),
+                        self.camera_frame.winfo_height()
+                    )
+                    
+                if self._container_size[0] > 0 and self._container_size[1] > 0:
+                    img = self._resize_with_aspect_ratio(img, 
+                                                       self._container_size[0], 
+                                                       self._container_size[1])
+                    
                 imgtk = ImageTk.PhotoImage(image=img)
                 self.camera_label.imgtk = imgtk
                 self.camera_label.configure(image=imgtk)
-        except (queue.Empty, AttributeError, RuntimeError):
-            pass
-        self.after(50, self.update_camera_preview)
+                self.last_preview_update = current_time
+                
+            except queue.Empty:
+                pass
+                
+        self.after(max(1, int(self.preview_interval * 1000)), self.update_camera_preview)
 
     def show_current_sign(self):
         # Update the combobox selection to match current_sign_index
@@ -439,31 +502,31 @@ class CollectorGUI(tk.Tk):
                 
             start_with_countdown()
         else:
-        # ====== ADD THIS DYNAMIC SIGN HANDLING BLOCK ======
+            # Dynamic sign handling
             idx = self.current_sign_index - len(self.signs['static'])
             sign_file = self.signs['dynamic'][idx]
             sign_name = os.path.splitext(sign_file)[0]
             
-            # Ask for number of videos
+            def ask_video_duration(video_count):
+                duration = simpledialog.askinteger("Duration", 
+                                                f"Duration per video (seconds):",
+                                                initialvalue=self.collector.sign_config.get(sign_name, 5),
+                                                parent=self)
+                if duration is not None:
+                    def start_with_countdown():
+                        self.collection_running = True
+                        self._start_countdown(self.initial_delay, 
+                                           lambda: self.collect_dynamic_sign(sign_name, duration, video_count))
+                    start_with_countdown()
+            
+            # Ask for number of videos first
             video_count = simpledialog.askinteger("Videos", 
-                                                f"Number of videos for {sign_name}:",
-                                                initialvalue=3)
-            if video_count is None: return  # User canceled
-            
-            # Ask for duration
-            duration = simpledialog.askinteger("Duration", 
-                                            f"Duration per video (seconds):",
-                                            initialvalue=self.collector.sign_config.get(sign_name, 5))
-            if duration is None: return
-            
-            def start_with_countdown():
-                self.collection_running = True
-                self._start_countdown(self.initial_delay, 
-                                    lambda: self.collect_dynamic_sign(sign_name, duration, video_count))
-                
-            start_with_countdown()
-            # ====== END OF DYNAMIC SIGN BLOCK ======
-        
+                                               f"Number of videos for {sign_name}:",
+                                               initialvalue=3,
+                                               parent=self)
+            if video_count is not None:
+                self.after(100, lambda: ask_video_duration(video_count))  # Small delay to ensure proper window ordering
+
     def _start_countdown(self, seconds, callback=None):
         self.status.config(text=f"Starting in {seconds}...")
         if seconds > 0:
@@ -542,79 +605,92 @@ class CollectorGUI(tk.Tk):
         def recording_thread():
             sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
             os.makedirs(sign_dir, exist_ok=True)
-            fps = 30  # Keda 7adedna en elvideo hytsagel b sor3et 30 frame fe elsanya
-            frame_interval = 1.0 / fps  # keda bn7seb elmoda been kol frame (about 0.033 sec)
-            # Create progress popup
-            popup = tk.Toplevel()
-            popup.title(f"Recording {sign_name}")
-            popup.geometry("640x480")
             
-            preview_label = ttk.Label(popup)
-            preview_label.pack(fill=tk.BOTH, expand=True)
+            # Try different codecs in order of preference
+            codecs = [
+                ('XVID', 'avi'),
+                ('mp4v', 'mp4'),
+                ('MJPG', 'avi'),
+            ]
             
-            progress = ttk.Progressbar(popup, orient=tk.HORIZONTAL)
-            progress.pack(fill=tk.X, padx=10, pady=5)
-
+            # Test which codec works
+            for codec, ext in codecs:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*codec)
+                    frame_size = (int(self.collector.cap.get(3)), 
+                                int(self.collector.cap.get(4)))
+                    test_path = os.path.join(sign_dir, f"test.{ext}")
+                    test_writer = cv2.VideoWriter(test_path, fourcc, 30, frame_size)
+                    
+                    if test_writer.isOpened():
+                        test_writer.release()
+                        os.remove(test_path)  # Clean up test file
+                        break
+                except Exception:
+                    continue
+            else:
+                # If no codec worked
+                self.after(0, lambda: messagebox.showerror("Error", 
+                    "Could not initialize video recording. No suitable codec found."))
+                return
+            
+            # Record videos with working codec
             for video_num in range(video_count):
-                # Update UI
-                self.after(0, lambda: progress.config(value=(video_num/video_count)*100))
-                self.after(0, lambda: self.status.config(
-                    text=f"Recording {sign_name} ({video_num+1}/{video_count})"
-                ))
-
-                # Wait between videos (except before first)
-                if video_num > 0:
-                    # Create a small popup window
-                    delay_popup = tk.Toplevel()
-                    delay_popup.title("Next Recording")
-                    delay_label = ttk.Label(delay_popup, text=f"Next recording in {self.video_delay} seconds...")
-                    delay_label.pack(padx=20, pady=10)
-                    
-                    time.sleep(self.video_delay)
-                    
-                    # Destroy the popup after delay
-                    delay_popup.destroy()
-
-                # Create video writer
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
-                out = cv2.VideoWriter(os.path.join(sign_dir, f"{sign_name}_{video_num}.mp4"), 
-                                    fourcc, 30, frame_size)
-
-                # Record for duration
-                start_time = time.time()
-                next_frame_time = start_time # Keda hn7seb elwa2t elly elmafrood n7ot feeh elframe elly gy fel video
-                end_time = start_time + duration
-            
-                while time.time() < end_time:
-                    current_time = time.time()
-                    if current_time < next_frame_time:
-                        # Sleep until the next frame interval, hena ka2ini ba2olo estana shwaya
-                        time.sleep(max(0, next_frame_time - current_time - 0.001))
+                video_path = os.path.join(sign_dir, f"{sign_name}_{video_num}.{ext}")
+                out = cv2.VideoWriter(video_path, fourcc, 30, frame_size)
                 
+                if not out.isOpened():
+                    self.after(0, lambda: messagebox.showerror("Error", 
+                        f"Failed to create video file {video_num + 1}"))
+                    continue
+                
+                start_time = time.time()
+                frame_buffer = []  # Buffer for smoother writing
+                
+                while (time.time() - start_time) < duration:
                     try:
                         frame = self.collector.frame_queue.get(timeout=0.1)
-                        out.write(frame)
+                        frame_buffer.append(frame)
                         
-                        # Update preview
-                        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        img = self._resize_with_aspect_ratio(img, 640, 480)
-                        imgtk = ImageTk.PhotoImage(image=img)
-                        self.after(0, lambda: self.update_preview(preview_label, imgtk))
+                        # Write frames in chunks
+                        if len(frame_buffer) >= 5:
+                            for f in frame_buffer:
+                                out.write(f)
+                            frame_buffer.clear()
+                            
                     except queue.Empty:
                         continue
-
+                
+                # Write remaining frames
+                for f in frame_buffer:
+                    out.write(f)
+                    
                 out.release()
+                
+                # Verify the video was created successfully
+                if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+                    self.after(0, lambda: messagebox.showerror("Error", 
+                        f"Failed to save video {video_num + 1}"))
+                
+                # Clear queues
+                while not self.collector.frame_queue.empty():
+                    try:
+                        self.collector.frame_queue.get_nowait()
+                    except queue.Empty:
+                        break
 
-            # Cleanup
-            popup.destroy()
-            self.current_sign_index += 1
-            self.show_current_sign()
-            self.collection_running = False
-            self.session_stats['recorded_items'] += video_count
-            self.session_stats['completed_signs'].add(self.current_sign_index)
+            self.after(0, lambda: self.update_ui_after_recording())
 
         threading.Thread(target=recording_thread, daemon=True).start()
+
+    def update_ui_after_recording(self):
+        """Update UI elements after recording completion"""
+        self.current_sign_index += 1
+        self.show_current_sign()
+        self.collection_running = False
+        self.session_stats['recorded_items'] += 1
+        self.session_stats['completed_signs'].add(self.current_sign_index)
+        self.status.config(text="Recording completed")
 
     def _resize_with_aspect_ratio(self, image, max_width, max_height):
         original_width, original_height = image.size
@@ -631,9 +707,33 @@ class CollectorGUI(tk.Tk):
     def start_test_recording(self):
         self.test_recording_active = True
         self.recording_popup, preview_label = self._create_recording_popup("Test Recording Preview")
-        self.test_video_path = os.path.join("test_recordings", f"test_{time.time()}.mp4")
-        os.makedirs("test_recordings", exist_ok=True)
         
+        # Try different codecs
+        codecs = [
+            ('XVID', 'avi'),
+            ('mp4v', 'mp4'),
+            ('MJPG', 'avi'),
+        ]
+        
+        # Find working codec
+        for codec, ext in codecs:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
+                self.test_video_path = os.path.join("test_recordings", f"test_{time.time()}.{ext}")
+                os.makedirs("test_recordings", exist_ok=True)
+                
+                self.test_writer = cv2.VideoWriter(self.test_video_path, fourcc, 30, frame_size)
+                if self.test_writer.isOpened():
+                    break
+            except Exception:
+                continue
+        else:
+            messagebox.showerror("Error", "Could not initialize video recording")
+            self.recording_popup.destroy()
+            return
+        
+        # Rest of the test recording code
         fps = 30  # Fixed target FPS
         frame_interval = 1.0 / fps
         frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
@@ -847,6 +947,15 @@ class CollectorGUI(tk.Tk):
         notebook = ttk.Notebook(settings)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
+        # User settings
+        user_frame = ttk.Frame(notebook)
+        notebook.add(user_frame, text="User")
+        
+        ttk.Label(user_frame, text="Username:").grid(row=0, column=0, padx=5, pady=5)
+        username_entry = ttk.Entry(user_frame)
+        username_entry.insert(0, self.collector.username)
+        username_entry.grid(row=0, column=1, padx=5, pady=5)
+        
         # Recording settings
         recording_frame = ttk.Frame(notebook)
         notebook.add(recording_frame, text="Recording")
@@ -867,8 +976,16 @@ class CollectorGUI(tk.Tk):
         resolution_cb.grid(row=0, column=1, padx=5, pady=5)
         
         def save_settings():
+            # Handle username change
+            new_username = username_entry.get().strip()
+            if new_username and new_username != self.collector.username:
+                if messagebox.askyesno("Confirm Change", 
+                                     "Changing username will create a new folder for recordings.\n"
+                                     "Are you sure you want to continue?"):
+                    self.collector.username = new_username
+                    self.status.config(text=f"Username changed to: {new_username}")
+            
             self.initial_delay = int(initial_delay.get())
-            # Add more settings saving logic
             settings.destroy()
             
         ttk.Button(settings, text="Save", command=save_settings).pack(pady=10)
