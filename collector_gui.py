@@ -647,7 +647,7 @@ class CollectorGUI(tk.Tk):
                 start_time = time.time()
                 frame_buffer = []  # Buffer for smoother writing
                 
-                while (time.time() - start_time) < duration:
+                while (time.time() - start_time) < duration and self.collection_running:
                     try:
                         frame = self.collector.frame_queue.get(timeout=0.1)
                         frame_buffer.append(frame)
@@ -667,21 +667,44 @@ class CollectorGUI(tk.Tk):
                     
                 out.release()
                 
-                # Verify the video was created successfully
-                if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
-                    self.after(0, lambda: messagebox.showerror("Error", 
-                        f"Failed to save video {video_num + 1}"))
-                
-                # Clear queues
-                while not self.collector.frame_queue.empty():
-                    try:
-                        self.collector.frame_queue.get_nowait()
-                    except queue.Empty:
-                        break
+                # Only show the delay popup if this is not the last video
+                if video_num < video_count - 1:
+                    # Create and show the delay popup
+                    self.after(0, lambda: self.show_delay_popup(video_num + 1, video_count))
+                    # Wait for the configured delay
+                    time.sleep(self.video_delay)
+                    # Remove the popup
+                    self.after(0, lambda: self.remove_delay_popup())
 
             self.after(0, lambda: self.update_ui_after_recording())
 
         threading.Thread(target=recording_thread, daemon=True).start()
+
+    def show_delay_popup(self, current_video, total_videos):
+        """Show a popup during the delay between videos"""
+        self.delay_popup = tk.Toplevel(self)
+        self.delay_popup.title("Get Ready")
+        self.delay_popup.geometry("300x150")
+        
+        # Center the popup on screen
+        self.delay_popup.transient(self)
+        self.delay_popup.grab_set()
+        
+        # Add message
+        message = f"Video {current_video} completed!\nGet ready for video {current_video + 1} of {total_videos}\n\nWaiting {self.video_delay} seconds..."
+        label = ttk.Label(self.delay_popup, text=message, wraplength=250, justify='center')
+        label.pack(expand=True)
+        
+        # Center the popup on the main window
+        x = self.winfo_x() + (self.winfo_width() // 2) - (300 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (150 // 2)
+        self.delay_popup.geometry(f"+{x}+{y}")
+
+    def remove_delay_popup(self):
+        """Remove the delay popup if it exists"""
+        if hasattr(self, 'delay_popup') and self.delay_popup is not None:
+            self.delay_popup.destroy()
+            self.delay_popup = None
 
     def update_ui_after_recording(self):
         """Update UI elements after recording completion"""
