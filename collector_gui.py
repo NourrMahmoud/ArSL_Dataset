@@ -731,66 +731,77 @@ class CollectorGUI(tk.Tk):
             self.stop_recording(self.recording_popup)
 
     def start_test_recording(self):
-        self.test_recording_active = True
-        self.recording_popup, preview_label = self._create_recording_popup("Test Recording Preview")
+       # Ask for recording duration
+       duration = simpledialog.askinteger("Duration", "Recording duration (seconds):", parent=self)
+       if not duration:
+        return
+    
+       self.test_recording_active = True
+       self.recording_popup, preview_label = self._create_recording_popup("Test Recording Preview")
+    
+       # Try different codecs
+       codecs = [
+        ('XVID', 'avi'),
+        ('mp4v', 'mp4'),
+        ('MJPG', 'avi'),
+       ]
+    
+       # Get frame size from camera
+       frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
+    
+       # Find working codec
+       working_codec, working_ext = None, None
+       for codec, ext in codecs:
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        test_path = os.path.join("test_recordings", f"test.{ext}")
+        test_writer = cv2.VideoWriter(test_path, fourcc, 30, frame_size)
+        if test_writer.isOpened():
+            test_writer.release()
+            os.remove(test_path)
+            working_codec = codec
+            working_ext = ext
+            break
+    
+       if not working_codec:
+        messagebox.showerror("Error", "Could not initialize video recording")
+        self.recording_popup.destroy()
+        return
+    
+       self.test_video_path = os.path.join("test_recordings", f"test_{time.time()}.{working_ext}")
+       os.makedirs("test_recordings", exist_ok=True)
+    
+       def recording_thread():
+        frames = []
+        start_time = time.time()
         
-        # Try different codecs
-        codecs = [
-            ('XVID', 'avi'),
-            ('mp4v', 'mp4'),
-            ('MJPG', 'avi'),
-        ]
-        
-        # Find working codec
-        for codec, ext in codecs:
+        # Collect frames for specified duration
+        while (time.time() - start_time) < duration and self.test_recording_active:
             try:
-                fourcc = cv2.VideoWriter_fourcc(*codec)
-                frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
-                self.test_video_path = os.path.join("test_recordings", f"test_{time.time()}.{ext}")
-                os.makedirs("test_recordings", exist_ok=True)
-                
-                self.test_writer = cv2.VideoWriter(self.test_video_path, fourcc, 30, frame_size)
-                if self.test_writer.isOpened():
-                    break
-            except Exception:
+                frame = self.collector.frame_queue.get(timeout=0.1)
+                frames.append(frame)
+                # Update preview
+                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                img = self._resize_with_aspect_ratio(img, 640, 480)
+                imgtk = ImageTk.PhotoImage(image=img)
+                self.after(0, lambda: self.update_preview(preview_label, imgtk))
+            except queue.Empty:
                 continue
-        else:
-            messagebox.showerror("Error", "Could not initialize video recording")
-            self.recording_popup.destroy()
-            return
         
-        # Rest of the test recording code
-        fps = 30  # Fixed target FPS
-        frame_interval = 1.0 / fps
-        frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.test_writer = cv2.VideoWriter(self.test_video_path, fourcc, fps, frame_size)
+        # Calculate actual FPS
+        actual_duration = time.time() - start_time
+        actual_fps = len(frames) / actual_duration if actual_duration > 0 else 30
         
-        def recording_thread():
-            try:
-                next_frame_time = time.time()
-                while self.test_recording_active:
-                    current_time = time.time()
-                    if current_time < next_frame_time:
-                        time.sleep(max(0, next_frame_time - current_time - 0.001))
-                    
-                    try:
-                        frame = self.collector.frame_queue.get(timeout=0.1)
-                        self.test_writer.write(frame)
-                        next_frame_time += frame_interval
-                        
-                        if self.recording_popup.winfo_exists():
-                            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                            img = self._resize_with_aspect_ratio(img, 640, 480)
-                            imgtk = ImageTk.PhotoImage(image=img)
-                            self.after(0, lambda: self.update_preview(preview_label, imgtk))
-                    except queue.Empty:
-                        continue
-            finally:
-                self.test_writer.release()
-                self.after(0, self.playback_test)
+        # Write frames with correct FPS
+        fourcc = cv2.VideoWriter_fourcc(*working_codec)
+        out = cv2.VideoWriter(self.test_video_path, fourcc, actual_fps, frame_size)
+        for frame in frames:
+            out.write(frame)
+        out.release()
         
-        threading.Thread(target=recording_thread, daemon=True).start()
+        self.after(0, self.playback_test)
+        self.stop_recording(self.recording_popup)
+    
+       threading.Thread(target=recording_thread, daemon=True).start()
     
     def record_video(self, sign_name, duration, progress_callback):
         self.recording = True
