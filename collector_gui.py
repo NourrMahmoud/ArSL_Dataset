@@ -603,22 +603,49 @@ class CollectorGUI(tk.Tk):
 
     def collect_dynamic_sign(self, sign_name, duration, video_count):
        def recording_thread():
-           sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
-           os.makedirs(sign_dir, exist_ok=True)
+            sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
+            os.makedirs(sign_dir, exist_ok=True)
+           
+            # Find the highest existing video number
+            existing_videos = [file for file in os.listdir(sign_dir) if file.startswith(sign_name)]
+            existing_count = len(existing_videos)
+            
+            if video_count <= existing_count:
+                self.after(0, lambda: messagebox.showinfo(
+                    "Recording Complete",
+                    f"Already have {existing_count} videos for {sign_name}. No need to record more."
+                ))
+                self.collection_running = False
+                return
+            
+            remaining_count = video_count - existing_count
+            
+            
+            start_number = 0
+            if existing_videos:
+                numbers = []
+                for video_file in existing_videos:
+                    # Extract number from filename like "(sign_name)_123.ext"
+                    try:
+                        sign_num = int(video_file.split('_')[-1].split('.')[0])
+                        numbers.append(sign_num)
+                    except (ValueError, IndexError):
+                        continue
+                if numbers:
+                    # find the highest number to continue the recording from there
+                    start_number = max(numbers) + 1
         
            # Try different codecs in order of preference
-           codecs = [
+            codecs = [
             ('XVID', 'avi'),
             ('mp4v', 'mp4'),
             ('MJPG', 'avi'),
-           ]
+            ]
         
            # Determine frame size from the camera
-           frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
+            frame_size = (int(self.collector.cap.get(3)), int(self.collector.cap.get(4)))
            
-           # Record videos with working codec
-           for video_num in range(video_count):
-            # Test which codec works
+           # Find working codec
             working_codec = None
             working_ext = None
             for codec, ext in codecs:
@@ -637,49 +664,60 @@ class CollectorGUI(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("Error", "No suitable codec found!"))
                 return
             
-            video_path = os.path.join(sign_dir, f"{sign_name}_{video_num}.{working_ext}")
             
-            # Collect all frames during the duration
-            start_time = time.time()
-            frames = []
-            
-            while (time.time() - start_time) < duration and self.collection_running:
-                try:
-                    frame = self.collector.frame_queue.get(timeout=0.1)
-                    frames.append(frame)
-                except queue.Empty:
+            for video_num in range(start_number, start_number + remaining_count):
+                if not self.collection_running:
+                    break
+
+                video_path = os.path.join(sign_dir, f"{sign_name}_{video_num}.{working_ext}")
+
+                # Collect all frames during the duration
+                start_time = time.time()
+                frames = []
+                
+                while (time.time() - start_time) < duration and self.collection_running:
+                    try:
+                        frame = self.collector.frame_queue.get(timeout=0.1)
+                        frames.append(frame)
+                    except queue.Empty:
+                        continue
+                
+                # Calculate actual FPS based on desired duration
+                if duration <= 0:
+                    actual_fps = 30  # Prevent division by zero, use default
+                else:
+                    actual_fps = max(1, len(frames) / duration)  # Ensure minimum 1 FPS
+                
+                # Initialize VideoWriter with calculated FPS
+                fourcc = cv2.VideoWriter_fourcc(*working_codec)
+                out = cv2.VideoWriter(video_path, fourcc, actual_fps, frame_size)
+                
+                if not out.isOpened():
+                    self.after(0, lambda: messagebox.showerror("Error", f"Failed to create video {video_num + 1}"))
                     continue
+                
+                # Write all collected frames
+                for frame in frames:
+                    out.write(frame)
+                out.release()
+                
+                # Update progress
+                current_progress = video_num - start_number + 1
+                self.after(0, lambda: self.progress.configure(value=current_progress))
+                self.after(0, lambda: self.status.config(
+                    text=f"Recorded {current_progress}/{remaining_count} videos"
+                ))
+                
+                # Show delay popup between recordings if not the last video
+                if video_num < start_number + remaining_count - 1:
+                    self.after(0, lambda: self.show_delay_popup(
+                        current_progress + existing_count,
+                        video_count
+                    ))
+                    time.sleep(self.video_delay)
+                    self.after(0, lambda: self.remove_delay_popup())
             
-            # Calculate actual FPS based on desired duration
-            if duration <= 0:
-                actual_fps = 30  # Prevent division by zero, use default
-            else:
-                actual_fps = max(1, len(frames) / duration)  # Ensure minimum 1 FPS
-            
-            # Initialize VideoWriter with calculated FPS
-            fourcc = cv2.VideoWriter_fourcc(*working_codec)
-            out = cv2.VideoWriter(video_path, fourcc, actual_fps, frame_size)
-            
-            if not out.isOpened():
-                self.after(0, lambda: messagebox.showerror("Error", f"Failed to create video {video_num + 1}"))
-                continue
-            
-            # Write all collected frames
-            for frame in frames:
-                out.write(frame)
-            
-            out.release()
-            
-            # Only show the delay popup if this is not the last video
-            if video_num < video_count - 1:
-                # Create and show the delay popup
-                self.after(0, lambda: self.show_delay_popup(video_num + 1, video_count))
-                # Wait for the configured delay
-                time.sleep(self.video_delay)
-                # Remove the popup
-                self.after(0, lambda: self.remove_delay_popup())
-        
-           self.after(0, lambda: self.update_ui_after_recording())
+            self.after(0, lambda: self.update_ui_after_recording())
 
        threading.Thread(target=recording_thread, daemon=True).start()
 
