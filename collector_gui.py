@@ -904,13 +904,18 @@ class CollectorGUI(tk.Tk):
             if not cap.isOpened():
                 messagebox.showerror("Error", "Could not open test recording!")
                 return
+            # Get video FPS and calculate proper delay
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            delay = int(1000 / fps) if fps > 0 else 33  # Default to 30 FPS if unavailable
             
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
+                # Show frame with proper timing
                 cv2.imshow("Test Recording Playback", frame)
-                if cv2.waitKey(30) == 27:  # ESC key
+                # Use calculated delay based on video FPS
+                if cv2.waitKey(delay) == 27:  # ESC key
                     break
             cap.release()
             cv2.destroyAllWindows()
