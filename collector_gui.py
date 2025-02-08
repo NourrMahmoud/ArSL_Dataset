@@ -744,7 +744,10 @@ class CollectorGUI(tk.Tk):
     
       self.test_recording_active = True
       self.recording_popup, preview_label = self._create_recording_popup("Test Recording Preview")
-    
+      
+      # Create test_recordings directory 
+      os.makedirs("test_recordings", exist_ok=True)  
+      
       # Try different codecs
       codecs = [
         ('XVID', 'avi'),
@@ -774,7 +777,6 @@ class CollectorGUI(tk.Tk):
         return
     
       self.test_video_path = os.path.join("test_recordings", f"test_{time.time()}.{working_ext}")
-      os.makedirs("test_recordings", exist_ok=True)
     
       def recording_thread():
         # Display countdown during delay using status label
