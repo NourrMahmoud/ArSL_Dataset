@@ -439,16 +439,33 @@ class CollectorGUI(tk.Tk):
             sign_type = 'static'
             sign_name = self.signs['static'][self.current_sign_index]
             display_name = f"Static: {sign_name}"
+            
+            # Update progress bar for static signs
+            sign_dir = os.path.join(self.collector.data_dir, "Images", os.path.splitext(sign_name)[0], self.collector.username)
+            if os.path.exists(sign_dir):
+                existing_files = len([f for f in os.listdir(sign_dir) if f.endswith('.jpg')])
+                self.progress.configure(maximum=200, value=existing_files)
+            else:
+                self.progress.configure(maximum=200, value=0)
+                
         else:
             sign_type = 'dynamic'
             idx = self.current_sign_index - len(self.signs['static'])
             sign_name = self.signs['dynamic'][idx]
             display_name = f"Dynamic: {sign_name}"
+            
+            # Update progress bar for dynamic signs
+            sign_dir = os.path.join(self.collector.data_dir, "Videos", os.path.splitext(sign_name)[0], self.collector.username)
+            if os.path.exists(sign_dir):
+                existing_files = len([f for f in os.listdir(sign_dir) if f.endswith(('.mp4', '.avi'))])
+                self.progress.configure(maximum=200, value=existing_files)
+            else:
+                self.progress.configure(maximum=200, value=0)
         
         self.sign_selector.set(display_name)
         media_path = os.path.join(self.signs_dir, sign_type, sign_name)
         self.play_media(media_path)
-        self.status.config(text=f"Current sign: {os.path.splitext(sign_name)[0]} ({sign_type})")
+        self.status.config(text=f"Current sign: {os.path.splitext(sign_name)[0]} ({sign_type}) - {self.progress['value']}/200 recorded")
 
     def play_media(self, path):
         if self.media_player:
@@ -1042,27 +1059,71 @@ class CollectorGUI(tk.Tk):
         
         # Calculate statistics
         total_signs = len(self.signs['static']) + len(self.signs['dynamic'])
-        completed = len(self.session_stats['completed_signs'])
+        
+        # Count actual recorded files for each sign type
+        static_recorded = 0
+        static_total = 0
+        if len(self.signs['static']) > 0:
+            for sign in self.signs['static']:
+                sign_name = os.path.splitext(sign)[0]
+                sign_dir = os.path.join(self.collector.data_dir, "Images", sign_name, self.collector.username)
+                if os.path.exists(sign_dir):
+                    files = len([f for f in os.listdir(sign_dir) if f.endswith('.jpg')])
+                    static_recorded += min(files, 200)  # Cap at 200
+                static_total += 200
+        
+        dynamic_recorded = 0
+        dynamic_total = 0
+        if len(self.signs['dynamic']) > 0:
+            for sign in self.signs['dynamic']:
+                sign_name = os.path.splitext(sign)[0]
+                sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
+                if os.path.exists(sign_dir):
+                    files = len([f for f in os.listdir(sign_dir) if f.endswith(('.mp4', '.avi'))])
+                    dynamic_recorded += min(files, 200)  # Cap at 200
+                dynamic_total += 200
+        
         elapsed_time = time.time() - self.session_stats['start_time']
         
         # Create progress display
-        ttk.Label(progress, text=f"Completed: {completed}/{total_signs} signs").pack(pady=5)
+        ttk.Label(progress, text=f"Total progress: {static_recorded + dynamic_recorded}/{static_total + dynamic_total} items").pack(pady=5)
         ttk.Label(progress, text=f"Session time: {int(elapsed_time/60)} minutes").pack(pady=5)
-        ttk.Label(progress, text=f"Items recorded: {self.session_stats['recorded_items']}").pack(pady=5)
         
         # Add progress bars
         progress_frame = ttk.LabelFrame(progress, text="Progress by type")
         progress_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        static_progress = ttk.Progressbar(progress_frame)
-        static_progress.pack(fill=tk.X, padx=5, pady=5)
-        static_progress['value'] = (len([s for s in self.session_stats['completed_signs'] 
-                                       if s < len(self.signs['static'])]) / len(self.signs['static'])) * 100
+        # Static progress
+        static_frame = ttk.Frame(progress_frame)
+        static_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(static_frame, text="Static signs:").pack(side=tk.LEFT)
+        static_progress = ttk.Progressbar(static_frame)
+        static_progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        dynamic_progress = ttk.Progressbar(progress_frame)
-        dynamic_progress.pack(fill=tk.X, padx=5, pady=5)
-        dynamic_progress['value'] = (len([s for s in self.session_stats['completed_signs'] 
-                                        if s >= len(self.signs['static'])]) / len(self.signs['dynamic'])) * 100
+        # Calculate percentages safely
+        static_value = (static_recorded / static_total * 100) if static_total > 0 else 0
+        static_progress['value'] = static_value
+        
+        # Dynamic progress
+        dynamic_frame = ttk.Frame(progress_frame)
+        dynamic_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(dynamic_frame, text="Dynamic signs:").pack(side=tk.LEFT)
+        dynamic_progress = ttk.Progressbar(dynamic_frame)
+        dynamic_progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        dynamic_value = (dynamic_recorded / dynamic_total * 100) if dynamic_total > 0 else 0
+        dynamic_progress['value'] = dynamic_value
+        
+        # Add labels showing actual numbers
+        ttk.Label(static_frame, 
+                text=f"{int(static_value)}% ({static_recorded}/{static_total})"
+                if static_total > 0 else "No static signs"
+                ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(dynamic_frame,
+                text=f"{int(dynamic_value)}% ({dynamic_recorded}/{dynamic_total})"
+                if dynamic_total > 0 else "No dynamic signs"
+                ).pack(side=tk.LEFT, padx=5)
     
     def show_settings(self):
         """Show comprehensive settings dialog"""
