@@ -244,6 +244,7 @@ class CollectorGUI(tk.Tk):
         self.bind('<Control-s>', lambda e: self.start_collection())
         self.bind('<Control-t>', lambda e: self.toggle_test_recording())
         self.bind('<Escape>', lambda e: self.emergency_stop())
+        self.bind('k', lambda e: self.stop_current_recording()) 
         
         # Add tooltips to buttons
         self.create_tooltips()
@@ -257,6 +258,22 @@ class CollectorGUI(tk.Tk):
         
         # Add a menu bar
         self.create_menu()
+        
+    def stop_current_recording(self):
+        """Stop current recording with 'k' key"""
+        if self.collection_running:
+            self.collection_running = False
+            self.status.config(text="Recording stopped by user (k)")
+            
+            # If we're in the middle of recording a video, it will be discarded
+            # The recording thread will detect collection_running = False and stop
+            
+            # If we have a recording popup, close it
+            if hasattr(self, 'recording_popup') and self.recording_popup:
+                self.recording_popup.destroy()
+                
+            # Update UI to show recording stopped
+            self.show_current_sign()  # Refresh progress display
         
     def set_delays(self):
         popup = tk.Toplevel()
@@ -619,7 +636,7 @@ class CollectorGUI(tk.Tk):
         label.config(image=imgtk)
 
     def collect_dynamic_sign(self, sign_name, duration, video_count):
-       def recording_thread():
+        def recording_thread():
             sign_dir = os.path.join(self.collector.data_dir, "Videos", sign_name, self.collector.username)
             os.makedirs(sign_dir, exist_ok=True)
            
@@ -684,59 +701,58 @@ class CollectorGUI(tk.Tk):
             
             for video_num in range(start_number, start_number + remaining_count):
                 if not self.collection_running:
+                    # Clean up and exit if recording was stopped
                     break
 
                 video_path = os.path.join(sign_dir, f"{sign_name}_{video_num}.{working_ext}")
-
-                # Collect all frames during the duration
-                start_time = time.time()
                 frames = []
+                start_time = time.time()
                 
+                # Collect frames
                 while (time.time() - start_time) < duration and self.collection_running:
                     try:
                         frame = self.collector.frame_queue.get(timeout=0.1)
                         frames.append(frame)
                     except queue.Empty:
                         continue
-                
-                # Calculate actual FPS based on desired duration
-                if duration <= 0:
-                    actual_fps = 30  # Prevent division by zero, use default
-                else:
-                    actual_fps = max(1, len(frames) / duration)  # Ensure minimum 1 FPS
-                
-                # Initialize VideoWriter with calculated FPS
-                fourcc = cv2.VideoWriter_fourcc(*working_codec)
-                out = cv2.VideoWriter(video_path, fourcc, actual_fps, frame_size)
-                
-                if not out.isOpened():
-                    self.after(0, lambda: messagebox.showerror("Error", f"Failed to create video {video_num + 1}"))
-                    continue
-                
-                # Write all collected frames
-                for frame in frames:
-                    out.write(frame)
-                out.release()
-                
-                # Update progress
-                current_progress = video_num - start_number + 1
-                self.after(0, lambda: self.progress.configure(value=current_progress))
-                self.after(0, lambda: self.status.config(
-                    text=f"Recorded {current_progress}/{remaining_count} videos"
-                ))
-                
-                # Show delay popup between recordings if not the last video
-                if video_num < start_number + remaining_count - 1:
-                    self.after(0, lambda: self.show_delay_popup(
-                        current_progress + existing_count,
-                        video_count
+                        
+                # Only save the video if we weren't interrupted
+                if self.collection_running:
+                    # Calculate FPS and save video
+                    actual_fps = max(1, len(frames) / duration)
+                    out = cv2.VideoWriter(video_path, fourcc, actual_fps, frame_size)
+                    
+                    if not out.isOpened():
+                        self.after(0, lambda: messagebox.showerror("Error", f"Failed to create video {video_num + 1}"))
+                        continue
+                    
+                    for frame in frames:
+                        out.write(frame)
+                    out.release()
+                    
+                    # Update progress
+                    current_progress = video_num - start_number + 1
+                    self.after(0, lambda: self.progress.configure(value=current_progress))
+                    self.after(0, lambda: self.status.config(
+                        text=f"Recorded {current_progress}/{remaining_count} videos"
                     ))
-                    time.sleep(self.video_delay)
-                    self.after(0, lambda: self.remove_delay_popup())
+                    
+                    # Show delay popup between recordings if not the last video
+                    if video_num < start_number + remaining_count - 1:
+                        self.after(0, lambda: self.show_delay_popup(
+                            current_progress + existing_count,
+                            video_count
+                        ))
+                        time.sleep(self.video_delay)
+                        self.after(0, lambda: self.remove_delay_popup())
+                else:
+                    # Recording was stopped, break the loop
+                    break
             
+            # Update UI after recording completes or is stopped
             self.after(0, lambda: self.update_ui_after_recording())
 
-       threading.Thread(target=recording_thread, daemon=True).start()
+        threading.Thread(target=recording_thread, daemon=True).start()
 
     def show_delay_popup(self, current_video, total_videos):
         """Show a popup during the delay between videos"""
