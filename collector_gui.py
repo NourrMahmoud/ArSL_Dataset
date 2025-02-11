@@ -716,7 +716,7 @@ class CollectorGUI(tk.Tk):
                     except queue.Empty:
                         continue
                         
-                # Only save the video if we weren't interrupted
+                # Only save the video if it wasn't interrupted
                 if self.collection_running:
                     # Calculate FPS and save video
                     actual_fps = max(1, len(frames) / duration)
