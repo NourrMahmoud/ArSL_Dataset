@@ -71,15 +71,15 @@ class SignDatasetCollector:
 
     def process_frame(self, frame):
         current_time = time.time()
-        # Control frame rate to maintain consistent recording speed
         if current_time - self.last_frame_time < self.frame_interval:
-            return None
-            
-        # Flip frame horizontally for more intuitive preview
+            return None, None  # Return both raw and annotated
+
+        # Flip frame horizontally for correct orientation
         frame = cv2.flip(frame, 1)
+        raw_frame = frame.copy()  # Create a copy of the flipped frame for raw output
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        
+
         # Track body pose
         pose_results = self.pose.process(rgb)
         if pose_results.pose_landmarks:
@@ -92,9 +92,9 @@ class SignDatasetCollector:
             for landmarks in hand_results.multi_hand_landmarks:
                 mp.solutions.drawing_utils.draw_landmarks(
                     frame, landmarks, self.mp_hands.HAND_CONNECTIONS)
-        
+
         self.last_frame_time = current_time
-        return frame
+        return raw_frame, frame  # Return raw (flipped, no drawings) and annotated frame
 
     def camera_loop(self):
         """Main camera capture loop that runs in a separate thread"""
@@ -103,21 +103,20 @@ class SignDatasetCollector:
             if not ret:
                 continue
                 
-            processed = self.process_frame(frame)
-            if processed is not None:
-                # Smart frame dropping: only keep most recent frames
+            raw_frame, annotated_frame = self.process_frame(frame)
+            if raw_frame is not None and annotated_frame is not None:
+                # Store raw frames for recording
                 try:
-                    self.frame_queue.put_nowait(processed)
+                    self.frame_queue.put_nowait(raw_frame)
                 except queue.Full:
-                    # If queue is full, remove oldest frame
                     try:
                         self.frame_queue.get_nowait()
-                        self.frame_queue.put_nowait(processed)
+                        self.frame_queue.put_nowait(raw_frame)
                     except (queue.Empty, queue.Full):
                         pass
                 
-                # Create smaller preview for UI
-                preview_frame = cv2.resize(processed, (320, 240))
+                # Create smaller preview for UI with annotations
+                preview_frame = cv2.resize(annotated_frame, (320, 240))
                 try:
                     self.preview_queue.put_nowait(preview_frame)
                 except queue.Full:
